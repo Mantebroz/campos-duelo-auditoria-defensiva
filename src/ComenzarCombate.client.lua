@@ -46,8 +46,8 @@ local CONFIG = {
 
 	-- Configuracion de nivel de combate.
 	-- ForceCombatLevel = nil usa tu sistema externo. Pon 11 para probar el modo superior.
-	ForceCombatLevel = nil,
-	DefaultCombatLevel = 5,
+	ForceCombatLevel = 11,
+	DefaultCombatLevel = 11,
 	MinCombatLevel = 1,
 	MaxCombatLevel = 11,
 	PerfectCombatLevel = 11,
