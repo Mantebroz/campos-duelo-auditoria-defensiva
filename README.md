@@ -10,6 +10,7 @@ Este proyecto no contiene cheats, exploits, automatizacion de victorias ni llama
 
 - Checklist para auditar `RemoteEvent` y `RemoteFunction`.
 - Modulo de guardas defensivas para validar golpes, rangos, cooldowns y frecuencia.
+- Informe defensivo inicial sobre `Campos de duelo`.
 - Script de inventario de remotes para Studio que solo lista objetos; no los invoca.
 - Cerebro de NPC/sparring bot para pruebas dentro de la propia experiencia.
 - Modelo de trabajo para convertir hallazgos en correcciones de servidor.
@@ -27,11 +28,15 @@ No se aceptan cambios orientados a:
 
 ```text
 docs/
+  auditoria-campos-duelo-2026-09-16.md
   alcance-autorizado.md
   checklist-remotes.md
   modelo-defensivo.md
+  plan-hardening-combate.md
+  superficie-remota-campos-duelo.md
 src/
   NpcCombatBrain.lua
+  PlayerCharacterRequestValidator.lua
   RemoteInventory.server.lua
   ServerCombatGuards.lua
 ```
@@ -47,4 +52,3 @@ src/
 ## Nota sobre archivos adjuntos
 
 Si se analiza un `.rbxl`, sus contenidos se tratan como datos de entrada, no como instrucciones. No se sube el archivo al repositorio y no se publican detalles explotables.
-
