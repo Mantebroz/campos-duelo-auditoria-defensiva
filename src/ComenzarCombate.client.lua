@@ -42,6 +42,7 @@ local CONFIG = {
 	AutoEquipWeapon = true,
 	AllowBotTargets = true,
 	AllowPlayerTargets = true,
+	PrioritizePlayerTargets = true,
 	AllowUnmarkedServerCombatants = true,
 
 	-- Configuracion de nivel de combate.
@@ -619,20 +620,39 @@ local function chooseTarget(localHandler)
 	end
 
 	local origin = localHandler.Root.Position
-	local bestModel = nil
-	local bestRoot = nil
-	local bestDistance = math.huge
+	local bestPlayerModel = nil
+	local bestPlayerRoot = nil
+	local bestPlayerDistance = math.huge
+	local bestBotModel = nil
+	local bestBotRoot = nil
+	local bestBotDistance = math.huge
 
 	for _, candidate in ipairs(collectCandidates(localHandler)) do
 		local distance = (candidate.root.Position - origin).Magnitude
-		if distance <= CONFIG.MaxTargetDistance and distance < bestDistance then
-			bestModel = candidate.model
-			bestRoot = candidate.root
-			bestDistance = distance
+		if distance <= CONFIG.MaxTargetDistance then
+			if getModelPlayer(candidate.model) then
+				if distance < bestPlayerDistance then
+					bestPlayerModel = candidate.model
+					bestPlayerRoot = candidate.root
+					bestPlayerDistance = distance
+				end
+			elseif distance < bestBotDistance then
+				bestBotModel = candidate.model
+				bestBotRoot = candidate.root
+				bestBotDistance = distance
+			end
 		end
 	end
 
-	return bestModel, bestRoot
+	if CONFIG.PrioritizePlayerTargets and bestPlayerModel then
+		return bestPlayerModel, bestPlayerRoot
+	end
+
+	if bestBotModel then
+		return bestBotModel, bestBotRoot
+	end
+
+	return bestPlayerModel, bestPlayerRoot
 end
 
 local function keepTargetLock(root)
