@@ -17,6 +17,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local CollectionService = game:GetService("CollectionService")
+local Workspace = game:GetService("Workspace")
 
 local localPlayer = Players.LocalPlayer
 local rng = Random.new()
@@ -56,6 +57,11 @@ local CONFIG = {
 	PerfectDefenseCooldown = 0.16,
 	PerfectAttackCooldown = 0.18,
 	PerfectMoveNoise = 0.005,
+
+	-- Fallback para ejecucion por loadstring/HttpGet cuando Roblox no permite
+	-- require() de ModuleScripts normales desde ese contexto.
+	AllowRemoteFallback = true,
+	RemoteMoveInterval = 1 / 15,
 
 	CombatLevelAttributeNames = {
 		"CombatLevel",
@@ -123,6 +129,11 @@ local GameManager = nil
 local CharacterController = nil
 local PlayerInputController = nil
 local TargetLockController = nil
+local remoteFallbackMode = false
+local playerCharacterRequest = nil
+local remoteActionIdCounter = 0
+local lastRemoteMoveAt = 0
+local lastRemoteTargetRoot = nil
 
 local currentTargetModel = nil
 local currentTargetRoot = nil
@@ -383,6 +394,26 @@ local function updateUi(level)
 	detailLabel.Text = controllersReady and statusText or "Esperando ControllersStarted..."
 end
 
+local function enableRemoteFallback(reason)
+	if not CONFIG.AllowRemoteFallback then
+		return false
+	end
+
+	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+	local playerCharacter = remotes and remotes:FindFirstChild("PlayerCharacter")
+	local requestFolder = playerCharacter and playerCharacter:FindFirstChild("Request")
+	if not requestFolder then
+		return false
+	end
+
+	playerCharacterRequest = requestFolder
+	remoteFallbackMode = true
+	controllersReady = true
+	statusText = "modo directo sin require"
+	warn("[ComenzarCombate] usando fallback directo: " .. tostring(reason))
+	return true
+end
+
 local function waitForControllers()
 	while ReplicatedStorage:GetAttribute("ControllersStarted") ~= true do
 		ReplicatedStorage:GetAttributeChangedSignal("ControllersStarted"):Wait()
@@ -390,8 +421,10 @@ local function waitForControllers()
 
 	local ok, manager = pcall(require, ReplicatedStorage:WaitForChild("GameManager"))
 	if not ok then
-		statusText = "No pude requerir GameManager"
 		warn("[ComenzarCombate] GameManager require fallo: " .. tostring(manager))
+		if not enableRemoteFallback(manager) then
+			statusText = "No pude requerir GameManager"
+		end
 		return
 	end
 
@@ -404,16 +437,100 @@ local function waitForControllers()
 	end)
 
 	if not okControllers then
-		statusText = "No pude cargar controladores"
 		warn("[ComenzarCombate] controladores no disponibles: " .. tostring(err))
+		if not enableRemoteFallback(err) then
+			statusText = "No pude cargar controladores"
+		end
 		return
 	end
 
+	remoteFallbackMode = false
 	controllersReady = true
 	statusText = "cliente listo"
 end
 
+local function getRootDirect(model)
+	if not model or not model:IsA("Model") then
+		return nil
+	end
+
+	local root = model:FindFirstChild("HumanoidRootPart")
+	if root and root:IsA("BasePart") then
+		return root
+	end
+
+	if model.PrimaryPart and model.PrimaryPart:IsA("BasePart") then
+		return model.PrimaryPart
+	end
+
+	return nil
+end
+
+local function normalizeEquippedWeapon(value)
+	if typeof(value) ~= "string" then
+		return nil
+	end
+
+	if string.sub(value, 1, 1) == "*" then
+		value = string.sub(value, 2)
+	end
+
+	if value == "" then
+		return nil
+	end
+
+	return value
+end
+
+local function findDirectLocalModel()
+	local character = localPlayer.Character
+	if getRootDirect(character) then
+		return character
+	end
+
+	for _, model in ipairs(CollectionService:GetTagged("CustomCharacter")) do
+		if model:IsA("Model") and model:GetAttribute("UserId") == localPlayer.UserId and getRootDirect(model) then
+			return model
+		end
+	end
+
+	local namedClientModel = Workspace:FindFirstChild(localPlayer.Name .. "_Client")
+	if getRootDirect(namedClientModel) then
+		return namedClientModel
+	end
+
+	local genericClientModel = Workspace:FindFirstChild("Player_Client")
+	if getRootDirect(genericClientModel) then
+		return genericClientModel
+	end
+
+	return nil
+end
+
+local function getDirectLocalHandler()
+	local model = findDirectLocalModel()
+	local root = getRootDirect(model)
+	if not model or not root then
+		return nil
+	end
+
+	local sourceCharacter = localPlayer.Character
+	local equippedWeapon = normalizeEquippedWeapon(model:GetAttribute("EquippedWeapon"))
+		or normalizeEquippedWeapon(sourceCharacter and sourceCharacter:GetAttribute("EquippedWeapon"))
+
+	return {
+		Model = model,
+		OriginalModel = sourceCharacter or model,
+		Root = root,
+		EquippedWeapon = equippedWeapon,
+	}
+end
+
 local function getLocalHandler()
+	if remoteFallbackMode then
+		return getDirectLocalHandler()
+	end
+
 	if not CharacterController then
 		return nil
 	end
@@ -656,6 +773,21 @@ local function chooseTarget(localHandler)
 end
 
 local function keepTargetLock(root)
+	if remoteFallbackMode then
+		if playerCharacterRequest and root ~= lastRemoteTargetRoot then
+			lastRemoteTargetRoot = root
+			local setTargetLock = playerCharacterRequest:FindFirstChild("SetTargetLock")
+			local setTargetSelection = playerCharacterRequest:FindFirstChild("SetTargetSelection")
+			if setTargetLock and setTargetLock:IsA("RemoteEvent") then
+				setTargetLock:FireServer(root)
+			end
+			if setTargetSelection and setTargetSelection:IsA("RemoteEvent") then
+				setTargetSelection:FireServer(root)
+			end
+		end
+		return
+	end
+
 	if not TargetLockController then
 		return
 	end
@@ -678,9 +810,9 @@ local function requestEquipWeapon()
 
 	nextEquipAt = os.clock() + 1
 
-	local requestFolder = ReplicatedStorage:FindFirstChild("Remotes")
+	local requestFolder = playerCharacterRequest or (ReplicatedStorage:FindFirstChild("Remotes")
 		and ReplicatedStorage.Remotes:FindFirstChild("PlayerCharacter")
-		and ReplicatedStorage.Remotes.PlayerCharacter:FindFirstChild("Request")
+		and ReplicatedStorage.Remotes.PlayerCharacter:FindFirstChild("Request"))
 
 	local setEquippedWeapon = requestFolder and requestFolder:FindFirstChild("SetEquippedWeapon")
 	if setEquippedWeapon and setEquippedWeapon:IsA("RemoteEvent") then
@@ -689,6 +821,32 @@ local function requestEquipWeapon()
 end
 
 local function requestAttack(handler, level)
+	if remoteFallbackMode then
+		if not playerCharacterRequest then
+			return false
+		end
+
+		if not handler.EquippedWeapon then
+			if CONFIG.AutoEquipWeapon then
+				requestEquipWeapon()
+				statusText = "equipando arma"
+			end
+			return false
+		end
+
+		local queueBasicAttack = playerCharacterRequest:FindFirstChild("QueueBasicAttack")
+		if not queueBasicAttack or not queueBasicAttack:IsA("RemoteEvent") then
+			return false
+		end
+
+		local heavyChance = isPerfectLevel(level) and 0.44 or lerpNumber(0.18, 0.36, levelAlpha(level))
+		local attackName = rng:NextNumber() < heavyChance and "Heavy01" or "Light01"
+		remoteActionIdCounter = (remoteActionIdCounter + 1) % 1000
+		queueBasicAttack:FireServer("cc_" .. tostring(remoteActionIdCounter), handler.EquippedWeapon, attackName)
+		statusText = "atacando directo"
+		return true
+	end
+
 	local actionManager = handler and handler.ActionManager
 	if not actionManager then
 		return false
@@ -717,6 +875,30 @@ local function requestAttack(handler, level)
 end
 
 local function requestDodge(handler, direction, level)
+	if remoteFallbackMode then
+		if not playerCharacterRequest then
+			return false
+		end
+
+		local startDodge = playerCharacterRequest:FindFirstChild("StartDodge")
+		if not startDodge or not startDodge:IsA("RemoteEvent") then
+			return false
+		end
+
+		dodgeMoveDirection = noisyDirection(direction, level)
+		dodgeMoveUntil = os.clock() + CONFIG.DodgeInputHoldSeconds
+		remoteActionIdCounter = (remoteActionIdCounter + 1) % 1000
+		startDodge:FireServer({
+			startTime = os.clock(),
+			actionId = 5000 + remoteActionIdCounter,
+			direction = dodgeMoveDirection,
+			isReverse = false,
+			dodgeStamina = 1,
+		})
+		statusText = "esquivando directo"
+		return true
+	end
+
 	local actionManager = handler and handler.ActionManager
 	if not actionManager or not actionManager.CanStartDodge then
 		return false
@@ -738,6 +920,14 @@ local function requestDodge(handler, direction, level)
 end
 
 local function releaseBlock(handler)
+	if remoteFallbackMode then
+		local releaseBlockRemote = playerCharacterRequest and playerCharacterRequest:FindFirstChild("ReleaseBlock")
+		if releaseBlockRemote and releaseBlockRemote:IsA("RemoteEvent") then
+			releaseBlockRemote:FireServer()
+		end
+		return
+	end
+
 	if not handler then
 		return
 	end
@@ -761,6 +951,25 @@ local function releaseBlock(handler)
 end
 
 local function requestBlock(handler)
+	if remoteFallbackMode then
+		local startBlock = playerCharacterRequest and playerCharacterRequest:FindFirstChild("StartBlock")
+		if not startBlock or not startBlock:IsA("RemoteEvent") then
+			return false
+		end
+
+		startBlock:FireServer({
+			startTime = os.clock(),
+			blockStrength = 1,
+		})
+		statusText = "bloqueando directo"
+
+		task.delay(CONFIG.BlockHoldSeconds, function()
+			releaseBlock(handler)
+		end)
+
+		return true
+	end
+
 	local actionManager = handler and handler.ActionManager
 	if not actionManager or not actionManager.CanStartBlock then
 		return false
@@ -970,6 +1179,41 @@ local function nextAttackCooldown(level)
 	return lerpNumber(CONFIG.MaxAttackCooldown, CONFIG.MinAttackCooldown, levelAlpha(level)) + rng:NextNumber(0, 0.08)
 end
 
+local function sendRemoteMoveIntent(handler, targetRoot, force)
+	if not remoteFallbackMode or not playerCharacterRequest or not handler or not handler.Root then
+		return
+	end
+
+	local now = os.clock()
+	if not force and now - lastRemoteMoveAt < CONFIG.RemoteMoveInterval then
+		return
+	end
+	lastRemoteMoveAt = now
+
+	local updateCFrame = playerCharacterRequest:FindFirstChild("UpdateCharacterCFrame")
+	if updateCFrame and updateCFrame:IsA("RemoteEvent") then
+		updateCFrame:FireServer(handler.Root.CFrame)
+	end
+
+	local setMove = playerCharacterRequest:FindFirstChild("SetDesiredMoveDirection")
+	if setMove and setMove:IsA("RemoteEvent") then
+		setMove:FireServer(desiredMoveDirection)
+	end
+
+	local lookDirection = handler.Root.CFrame.LookVector
+	if targetRoot then
+		local toTarget = flatUnit(targetRoot.Position - handler.Root.Position)
+		if toTarget.Magnitude > 0 then
+			lookDirection = toTarget
+		end
+	end
+
+	local setLook = playerCharacterRequest:FindFirstChild("SetDesiredLookDirection")
+	if setLook and setLook:IsA("RemoteEvent") then
+		setLook:FireServer(lookDirection, isPerfectLevel(readCombatLevel()) and 90 or 55)
+	end
+end
+
 local function stepAi(dt)
 	local level = readCombatLevel()
 	updateUi(level)
@@ -980,6 +1224,9 @@ local function stepAi(dt)
 
 	if not enabled then
 		desiredMoveDirection = Vector3.zero
+		if remoteFallbackMode then
+			sendRemoteMoveIntent(getLocalHandler(), nil, true)
+		end
 		return
 	end
 
@@ -1007,6 +1254,7 @@ local function stepAi(dt)
 	if not currentTargetModel or not currentTargetRoot then
 		desiredMoveDirection = Vector3.zero
 		keepTargetLock(nil)
+		sendRemoteMoveIntent(handler, nil, true)
 		statusText = "buscando objetivo disponible"
 		return
 	end
@@ -1016,6 +1264,7 @@ local function stepAi(dt)
 	local localRoot = handler.Root
 	local distance = (Vector3.new(currentTargetRoot.Position.X, 0, currentTargetRoot.Position.Z) - Vector3.new(localRoot.Position.X, 0, localRoot.Position.Z)).Magnitude
 	desiredMoveDirection = computeMoveDirection(localRoot, currentTargetRoot, level)
+	sendRemoteMoveIntent(handler, currentTargetRoot)
 
 	if targetSignalsAttack(currentTargetModel, currentTargetRoot, localRoot, distance, level) then
 		queueDefense(handler, localRoot, currentTargetRoot, currentTargetModel, level)
