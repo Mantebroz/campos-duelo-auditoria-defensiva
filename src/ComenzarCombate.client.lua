@@ -61,6 +61,7 @@ local CONFIG = {
 	-- Fallback para ejecucion por loadstring/HttpGet cuando Roblox no permite
 	-- require() de ModuleScripts normales desde ese contexto.
 	AllowRemoteFallback = true,
+	RemoteFallbackWaitSeconds = 12,
 	RemoteMoveInterval = 1 / 15,
 
 	CombatLevelAttributeNames = {
@@ -391,17 +392,36 @@ local function updateUi(level)
 		targetLabel.Text = "Objetivo: detenido"
 	end
 
-	detailLabel.Text = controllersReady and statusText or "Esperando ControllersStarted..."
+	detailLabel.Text = controllersReady and statusText or "Esperando remotes del cliente..."
 end
 
-local function enableRemoteFallback(reason)
+local function findPlayerCharacterRequest(timeoutSeconds)
+	local deadline = os.clock() + (timeoutSeconds or 0)
+
+	repeat
+		local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+		local playerCharacter = remotes and remotes:FindFirstChild("PlayerCharacter")
+		local requestFolder = playerCharacter and playerCharacter:FindFirstChild("Request")
+		if requestFolder then
+			return requestFolder
+		end
+
+		if timeoutSeconds == nil or timeoutSeconds <= 0 then
+			return nil
+		end
+
+		task.wait(0.1)
+	until os.clock() >= deadline
+
+	return nil
+end
+
+local function enableRemoteFallback(reason, timeoutSeconds)
 	if not CONFIG.AllowRemoteFallback then
 		return false
 	end
 
-	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-	local playerCharacter = remotes and remotes:FindFirstChild("PlayerCharacter")
-	local requestFolder = playerCharacter and playerCharacter:FindFirstChild("Request")
+	local requestFolder = findPlayerCharacterRequest(timeoutSeconds or 0)
 	if not requestFolder then
 		return false
 	end
@@ -415,14 +435,20 @@ local function enableRemoteFallback(reason)
 end
 
 local function waitForControllers()
-	while ReplicatedStorage:GetAttribute("ControllersStarted") ~= true do
-		ReplicatedStorage:GetAttributeChangedSignal("ControllersStarted"):Wait()
+	if ReplicatedStorage:GetAttribute("ControllersStarted") ~= true then
+		if enableRemoteFallback("sin ControllersStarted", CONFIG.RemoteFallbackWaitSeconds) then
+			return
+		end
+
+		statusText = "No encontre remotes PlayerCharacter.Request"
+		warn("[ComenzarCombate] no se encontro ControllersStarted ni PlayerCharacter.Request")
+		return
 	end
 
 	local ok, manager = pcall(require, ReplicatedStorage:WaitForChild("GameManager"))
 	if not ok then
 		warn("[ComenzarCombate] GameManager require fallo: " .. tostring(manager))
-		if not enableRemoteFallback(manager) then
+		if not enableRemoteFallback(manager, CONFIG.RemoteFallbackWaitSeconds) then
 			statusText = "No pude requerir GameManager"
 		end
 		return
@@ -438,7 +464,7 @@ local function waitForControllers()
 
 	if not okControllers then
 		warn("[ComenzarCombate] controladores no disponibles: " .. tostring(err))
-		if not enableRemoteFallback(err) then
+		if not enableRemoteFallback(err, CONFIG.RemoteFallbackWaitSeconds) then
 			statusText = "No pude cargar controladores"
 		end
 		return
