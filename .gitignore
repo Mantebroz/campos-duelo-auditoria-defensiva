@@ -1,0 +1,17 @@
+# Roblox place/model binaries should stay out of the public repo unless you own them
+*.rbxl
+*.rbxlx
+*.rbxm
+*.rbxmx
+
+# Local exports and notes
+artifacts/
+private/
+*.log
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
