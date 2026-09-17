@@ -31,12 +31,15 @@ docs/
   auditoria-campos-duelo-2026-09-16.md
   alcance-autorizado.md
   checklist-remotes.md
+  interpretacion-cliente-remotes.md
+  matriz-playercharacter.md
   modelo-defensivo.md
   plan-hardening-combate.md
   superficie-remota-campos-duelo.md
 src/
   NpcCombatBrain.lua
   PlayerCharacterRequestValidator.lua
+  RemotePolicyMatrix.lua
   RemoteInventory.server.lua
   ServerCombatGuards.lua
 ```
